@@ -190,7 +190,3 @@ r2 = app.invoke({"input": "..."}, config=config)  # checkpointer reloads state
 4. **Stream responses:** Use `.stream()` for real-time feedback
 5. **Add human approval:** Use LangGraph interrupts for sensitive operations
 6. **Monitor & trace:** Use LangSmith to debug agent behavior
-
----
-
-## MIT License
