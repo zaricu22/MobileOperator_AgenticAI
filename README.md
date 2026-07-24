@@ -59,6 +59,34 @@ Demonstrates:
 
 ---
 
+## 🔗 API Keys & Environment
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+Both scripts use `gpt-4o-mini` (free tier eligible). Swap the model name to use a different LLM.
+
+---
+
+## 📝 Fake Data
+
+Both scripts use mocked account data instead of real databases:
+
+```python
+FAKE_ACCOUNTS = {
+    "0641234567": {
+        "plan": "Plan M",
+        "data_left_gb": 3.2,
+        "roaming_included": "EU only, 10GB cap"
+    }
+}
+```
+
+Replace with real calls (SQL DB, REST API, gRPC) to ground queries in actual user data.
+
+---
+
 ## 🛠️ Concepts Covered
 
 ### Both Scripts
@@ -151,34 +179,6 @@ r2 = app.invoke({"input": "..."}, config=config)  # checkpointer reloads state
 - **User thread management** (one thread per user ID)
 - **Retry/clarification loops** (internal to one turn)
 - **Real-world customer support system** (matches typical architecture)
-
----
-
-## 🔗 API Keys & Environment
-
-```bash
-export OPENAI_API_KEY=sk-...
-```
-
-Both scripts use `gpt-4o-mini` (free tier eligible). Swap the model name to use a different LLM.
-
----
-
-## 📝 Fake Data
-
-Both scripts use mocked account data instead of real databases:
-
-```python
-FAKE_ACCOUNTS = {
-    "0641234567": {
-        "plan": "Plan M",
-        "data_left_gb": 3.2,
-        "roaming_included": "EU only, 10GB cap"
-    }
-}
-```
-
-Replace with real calls (SQL DB, REST API, gRPC) to ground queries in actual user data.
 
 ---
 
