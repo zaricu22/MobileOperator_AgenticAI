@@ -185,8 +185,6 @@ r2 = app.invoke({"input": "..."}, config=config)  # checkpointer reloads state
 ## 🚀 Next Steps
 
 1. **Add real tools:** Replace FAKE_ACCOUNTS with actual database calls
-2. **Integrate into web app:** Wrap LangGraph in FastAPI/Flask
 3. **Add vector search:** Ingest real customer policies, not hardcoded strings
 4. **Stream responses:** Use `.stream()` for real-time feedback
-5. **Add human approval:** Use LangGraph interrupts for sensitive operations
 6. **Monitor & trace:** Use LangSmith to debug agent behavior

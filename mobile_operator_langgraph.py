@@ -13,6 +13,10 @@ LangGraph concepts now implemented in this file (previously missing):
   - Checkpointing        -> MemorySaver + thread_id bridges state ACROSS separate
                             app.invoke() calls, so turn 2 can resolve "it" without
                             the caller re-supplying turn 1's answer
+  - Human-in-the-loop    -> request_refund_node calls interrupt() to PAUSE before
+                            a sensitive operation (a refund), resuming only when
+                            the caller calls Command(resume=...) with the same
+                            thread_id — a human approves/denies before it proceeds
 
   - Graph state: the checkpointer reloads a turn's persisted state before the
     next turn's node runs, which is what lets "does it cover roaming?" resolve
@@ -39,11 +43,13 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.schema.output_parser import StrOutputParser
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import interrupt, Command
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 MAX_RETRIES = 2
 UNCERTAIN_PHRASES = ("i don't know", "not sure", "unclear", "cannot determine")
+SENSITIVE_KEYWORDS = ("refund", "cancel my plan", "cancel plan")
 
 # //====================  FAKE DATA  ======
 # ---- 1. Account data answers will be grounded in ----
@@ -125,9 +131,44 @@ def clarify_node(state: AgentState) -> AgentState:
     )
     print(f"clarify_node -> retry {state['retry_count'] + 1}/{MAX_RETRIES}, enriching question")
     return {**state, "question": enriched_question, "retry_count": state["retry_count"] + 1}
+
+
+# ---- 5b. Node: SENSITIVE OPERATION — pauses for HUMAN APPROVAL before acting ----
+# Purpose: a refund is a real side effect, not just information — this node calls
+# interrupt() to PAUSE graph execution and hand control back to whatever is
+# running app.invoke(). Execution only resumes when the caller calls
+# app.invoke(Command(resume=<value>), config=config) with the SAME thread_id;
+# `decision` below becomes whatever value was passed to Command(resume=...).
+# This requires a checkpointer (already set up below) — without one, LangGraph
+# has nowhere to persist the paused state while waiting for a human.
+def request_refund_node(state: AgentState) -> AgentState:
+    decision = interrupt(
+        {
+            "action": "approve_refund",
+            "phone_number": state["phone_number"],
+            "question": state["question"],
+        }
+    )
+    if decision:
+        answer = "Your refund has been approved and will be processed within 5 business days."
+    else:
+        answer = "Your refund request needs further review and has not been approved yet."
+    print(f"request_refund_node -> human decision: {decision!r}")
+    return {**state, "answer": answer, "last_answer": answer}
 # //=======================================
 
 # //====================  ROUTER  =========
+# ---- 5c. Router — CONDITIONAL ROUTING from START: sensitive request, or normal answer ----
+# Purpose: this check happens BEFORE any LLM call — a fixed keyword check, not a
+# model decision, since routing a refund request is exactly the kind of thing you
+# want enforced in code rather than left to the LLM's judgment.
+def route_from_start(state: AgentState) -> str:
+    question_lower = state["question"].lower()
+    if any(keyword in question_lower for keyword in SENSITIVE_KEYWORDS):
+        return "sensitive"
+    return "normal"
+
+
 # ---- 6. Router — CONDITIONAL ROUTING: loop back for clarification, or end this turn ----
 def route_after_answer(state: AgentState) -> str:  # <- LRM (reasoning)
     answer_lower = (state.get("answer") or "").lower()
@@ -142,27 +183,37 @@ def route_after_answer(state: AgentState) -> str:  # <- LRM (reasoning)
 graph = StateGraph(AgentState)
 graph.add_node("answer", answer_node)
 graph.add_node("clarify", clarify_node)
+graph.add_node("request_refund", request_refund_node)
 
 # Runtime order:
-#   1. START -> "answer" — the graph begins, answer_node runs
-#   2. After answer_node finishes, route_after_answer(state) is called (this is
+#   1. START -> route_from_start(state) decides route:"sensitive" or route:"normal"
+#      before answer_node ever runs
+#   2. route:"normal" -> "answer" — the ordinary path, answer_node runs
+#   3. After answer_node finishes, route_after_answer(state) is called (this is
 #      what add_conditional_edges wires up) — it inspects state["answer"] and
 #      returns either route:"clarify" or route:"end"
-#   3. If it returned route:"clarify" -> clarify_node runs next
-#   4. route:"clarify" -> route:"answer" — after clarify_node finishes, control goes back
+#   4. If it returned route:"clarify" -> clarify_node runs next
+#   5. route:"clarify" -> route:"answer" — after clarify_node finishes, control goes back
 #      to answer_node with updated state["question"] (this is the actual loop)
-#   5. answer_node runs again, then step 2 repeats — route_after_answer is
+#   6. answer_node runs again, then step 3 repeats — route_after_answer is
 #      checked again
-#   6. This keeps cycling until route_after_answer returns route:"end" (or
+#   7. This keeps cycling until route_after_answer returns route:"end" (or
 #      retry_count hits MAX_RETRIES, which forces route:"end" regardless of how
 #      uncertain the answer still sounds)
-graph.add_edge(START, "answer")
+#   8. route:"sensitive" -> "request_refund" — a SEPARATE path entirely: interrupt()
+#      pauses here until a human resumes the run with Command(resume=...)
+graph.add_conditional_edges(
+    START,
+    route_from_start,
+    {"sensitive": "request_refund", "normal": "answer"},
+)
 graph.add_conditional_edges(
     "answer",
     route_after_answer,
     {"clarify": "clarify", "end": END},
 )
 graph.add_edge("clarify", "answer")  # CYCLE: loops back within this turn
+graph.add_edge("request_refund", END)
 
 # ---- 8. Checkpointer — bridges state ACROSS separate invoke() calls ----
 # Purpose: without this, every app.invoke() would start from a blank AgentState,
@@ -210,6 +261,22 @@ if __name__ == "__main__":
     )
     print("Turn 3:", turn3["answer"])
     print("Turn 3 retries used:", turn3["retry_count"])  # > 0 if clarify actually looped
+
+    # --- Turn 4: a SENSITIVE request — this is the HUMAN-IN-THE-LOOP use-case ---
+    # route_from_start detects "refund" and sends this straight to
+    # request_refund_node, which calls interrupt() and PAUSES here. app.invoke()
+    # returns immediately with an "__interrupt__" key instead of a normal "answer".
+    turn4 = app.invoke(
+        {"phone_number": "0641234567", "question": "I want a refund for last month", "retry_count": 0},
+        config=config,
+    )
+    if "__interrupt__" in turn4:
+        print("Turn 4 paused for human approval:", turn4["__interrupt__"])
+        # simulate a human reviewing the request and approving it — in a real
+        # system this Command(resume=...) call would come from a support agent's
+        # UI action, not from this script
+        turn4 = app.invoke(Command(resume=True), config=config)
+    print("Turn 4:", turn4["answer"])
 # //=======================================
 
 # Full concept list mapped to this file:
@@ -222,15 +289,18 @@ if __name__ == "__main__":
 # - Vector Database     -> not demonstrated — no embeddings or similarity search here
 # - RAG                 -> not demonstrated — same reason, no retrieval step at all
 # - LangChain           -> prompt | llm | StrOutputParser() pipe syntax inside answer_node
-# - LangGraph           -> START entry point, add_conditional_edges for routing, a
-#                          genuine CYCLE (clarify -> answer back-edge, bounded by
-#                          retry_count), and a MemorySaver checkpointer — this last
-#                          part is the main addition: state now survives ACROSS
-#                          separate invoke() calls, not just between nodes in one call.
+# - LangGraph           -> START entry point (now with conditional routing FROM
+#                          START itself, not just after a node), add_conditional_edges
+#                          for routing, a genuine CYCLE (clarify -> answer back-edge,
+#                          bounded by retry_count), a MemorySaver checkpointer (state
+#                          survives ACROSS separate invoke() calls), and
+#                          human-in-the-loop via interrupt()/Command(resume=...) in
+#                          request_refund_node, pausing before a sensitive operation
+#                          until a human approves it.
 #                          Still NOT used: ToolNode, streaming (.stream/.astream),
-#                          async (.ainvoke), human-in-the-loop interrupts, parallel
-#                          fan-out/Send, subgraphs, state history/time travel, the
-#                          long-term Store, per-node RetryPolicy, recursion_limit config
+#                          async (.ainvoke), parallel fan-out/Send, subgraphs, state
+#                          history/time travel, the long-term Store, per-node
+#                          RetryPolicy, recursion_limit config
 # - MCP                 -> not demonstrated — no tool calls, every node is pure LLM generation
 # - LRM (reasoning)     -> route_after_answer + the clarify loop is a (small) form of
 #                          the model's own answer driving another attempt, though the
