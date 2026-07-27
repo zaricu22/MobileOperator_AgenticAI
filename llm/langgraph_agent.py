@@ -33,19 +33,22 @@ Core LangGraph concept this whole file is built on:
   object that gets handed from node to node, and each node's job is to read
   some of that state and write more of it.
 
-pip install langchain langchain-openai langgraph
-export OPENAI_API_KEY=...
+pip install langchain langchain-groq langgraph
+export GROQ_API_KEY=...
+python -m llm.langgraph_agent
 """
 
 from typing import TypedDict, Optional
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# Groq instead of ChatOpenAI: same LangChain chat-model interface, but Groq has
+# a free tier (no billing setup needed) and serves this open-weight model fast.
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 MAX_RETRIES = 2
 UNCERTAIN_PHRASES = ("i don't know", "not sure", "unclear", "cannot determine")
@@ -85,9 +88,12 @@ already told the customer:
 
 "{previous_answer}"
 
-Now answer their follow-up question, using that previous answer as context
-to resolve anything ambiguous (like "it" or "that"). If you genuinely cannot
-answer from the info given, say "I'm not sure" rather than guessing:
+Account info: {account}
+
+Now answer their follow-up question, grounding your answer in the account
+info above and using the previous answer as context to resolve anything
+ambiguous (like "it" or "that"). If you genuinely cannot answer from the
+info given, say "I'm not sure" rather than guessing:
 
 Follow-up question: {question}
 Answer:"""
@@ -108,7 +114,7 @@ def answer_node(state: AgentState) -> AgentState:
 
     if last_answer:
         chain = followup_prompt | llm | StrOutputParser()
-        answer = chain.invoke({"previous_answer": last_answer, "question": state["question"]})  # <- Context Engineering
+        answer = chain.invoke({"previous_answer": last_answer, "account": account, "question": state["question"]})  # <- Context Engineering
     else:
         chain = plan_prompt | llm | StrOutputParser()
         answer = chain.invoke({"account": account, "question": state["question"]})
@@ -281,7 +287,7 @@ if __name__ == "__main__":
 
 # Full concept list mapped to this file:
 
-# - LLM                 -> ChatOpenAI does the generation inside answer_node, every turn
+# - LLM                 -> ChatGroq does the generation inside answer_node, every turn
 # - Prompt Engineering  -> plan_prompt grounds the first turn in account data;
 #                          followup_prompt resolves "it"/"that" using last_answer, and
 #                          is told to say "I'm not sure" rather than guess (so

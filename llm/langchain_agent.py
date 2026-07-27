@@ -18,23 +18,27 @@ Mobile Operator support example — LangChain ONLY (no LangGraph), covering:
                                   (diversity), score threshold (drop low-confidence
                                   matches), and metadata filtering (scope to a category)
 
-pip install langchain langchain-openai langchain-community faiss-cpu pypdf pydantic
-export OPENAI_API_KEY=...
+pip install langchain langchain-groq langchain-huggingface langchain-community faiss-cpu pypdf pydantic
+export GROQ_API_KEY=...
+python -m llm.langchain_agent
 """
 
 from typing import List
 from pydantic import BaseModel, Field
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain.tools import tool
-from langchain.memory import ConversationBufferMemory
-from langchain.agents import create_react_agent, AgentExecutor
+from langchain_classic.memory import ConversationBufferMemory
+from langchain_classic.agents import create_react_agent, AgentExecutor
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# Groq instead of ChatOpenAI: same LangChain chat-model interface, but Groq has
+# a free tier (no billing setup needed) and serves this open-weight model fast.
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 # //============  SECTION: KB_RETRIEVER ===================
 # ---- 1. Knowledge base ingestion — VectorStoreRetriever ----
@@ -56,7 +60,12 @@ kb_metadata = [
     {"category": "roaming"},
     {"category": "roaming"},
 ]
-embeddings = OpenAIEmbeddings()
+# Local embedding model instead of OpenAIEmbeddings: Groq (this file's LLM
+# provider) has no embeddings endpoint, and this keeps the whole script free/
+# API-key-free for the vector store too. Runs on-device via sentence-transformers
+# (no network call per embed) - weights are pulled from the HF Hub once on first
+# run and cached under ~/.cache/huggingface, so every run after that is offline.
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 vector_db = FAISS.from_texts(kb_chunks, embeddings, metadatas=kb_metadata)
 
 # VectorStoreRetriever: the standard LangChain wrapper around a vector store's
@@ -196,7 +205,7 @@ extract_prompt = PromptTemplate(
 
 # LCEL chain: prompt -> LLM -> parser, same pipe pattern as earlier examples,
 # just with JsonOutputParser instead of StrOutputParser at the end.
-# syntax: PromptTemplate | ChatOpenAI | args
+# syntax: PromptTemplate | ChatGroq | args
 extract_chain = extract_prompt | llm | json_parser
 # //=======================================================
 
@@ -278,6 +287,18 @@ agent = create_react_agent(llm, tools, react_prompt)  # <- LRM (reasoning): plan
 agent_executor = AgentExecutor(
     agent=agent, tools=tools, memory=memory, verbose=True, handle_parsing_errors=True
 )
+
+
+def build_agent_executor() -> AgentExecutor:
+    """Fresh AgentExecutor with its OWN ConversationBufferMemory, instead of the
+    shared `memory` global above. Callers that serve multiple customers at once
+    (e.g. web/app.py, keying one of these per phone number) need isolated chat
+    histories - reusing `agent_executor` would leak one customer's conversation
+    into another's `chat_history`."""
+    session_memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    return AgentExecutor(
+        agent=agent, tools=tools, memory=session_memory, verbose=True, handle_parsing_errors=True
+    )
 # //=======================================================
 
 # //============  SECTION: MAIN ===========================
@@ -321,7 +342,7 @@ if __name__ == "__main__":
 
 # Full concept list mapped to this file:
 
-# - LLM                  -> ChatOpenAI powers every step: classification, tool
+# - LLM                  -> ChatGroq powers every step: classification, tool
 #                           selection, and the agent's reasoning/answers
 # - Prompt Engineering    -> extract_prompt forces a JSON schema; react_prompt forces
 #                           the strict Thought/Action/Observation format
