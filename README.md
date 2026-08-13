@@ -14,6 +14,12 @@ The Flask chat page (`web/app.py`), backend set to LangGraph: `followup_prompt` 
 
 ---
 
+## ⚠️ Not Suitable for Render's Free Tier
+
+Attempted deploying `web/app.py` there and hit `Out of memory (used over 512Mi)` at every start. Importing `llm/langchain_agent.py` loads PyTorch + `sentence-transformers` for local `HuggingFaceEmbeddings`, builds a FAISS index, and parses/embeds `plans_handbook.pdf` — all in-process, at startup. That alone exceeds the free (and Starter — same 512MB RAM, more CPU only) plan's memory cap; Standard ($25/mo, 2GB RAM) is the first tier with enough headroom. Run it locally instead (see [Run the Flask Chat Page](#run-the-flask-chat-page)).
+
+---
+
 ## 📋 Overview
 
 Two agent implementations solve the same domain (mobile operator support queries), each reachable through both a FastAPI service and a Flask chat page - both HTTP layers let a caller pick which agent answers, per request:
@@ -51,89 +57,15 @@ MobileOperator_AgenticAI/
 
 ---
 
-## 🚀 Quick Start
+## 🆚 FastAPI vs Flask
 
-### Prerequisites
+**FastAPI** is API-first:<br>
+It excels at JSON endpoints, auto-generates OpenAPI/Swagger docs, and gives you async + Pydantic auto-mapping/validation (via request/response models, e.g. `ChatRequest`/`ChatResponse` in `api/main.py`).<br>
+It can render HTML (via `Jinja2Templates`/`StaticFiles`), but you have to wire that up yourself — no `/templates` folder auto-scan like Flask does, and the `request` parameter must be explicitly defined and passed into the template response (boilerplate code).
 
-```bash
-pip install langchain langchain-groq langchain-huggingface langchain-community langgraph faiss-cpu pypdf pydantic fastapi uvicorn
-export GROQ_API_KEY=gsk-...
-```
-
-For running the test suite, also install:
-
-```bash
-pip install pytest httpx
-```
-
-For PDF example: ensure `plans_handbook.pdf` exists in the working directory.
-
-### Run LangChain Example (Standalone)
-
-```bash
-python -m llm.langchain_agent
-```
-
-Demonstrates:
-- JSON output parsing (structured classification)
-- Tool calling (single-step, manual)
-- ReAct agent loop (autonomous multi-step)
-- RAG (knowledge base + PDF retrieval)
-
-### Run LangGraph Example (Standalone)
-
-```bash
-python -m llm.langgraph_agent
-```
-
-Demonstrates:
-- Graph-based state machine
-- Conditional routing (branching logic)
-- Loops/cycles within a turn
-- Cross-turn memory via checkpointing
-- **Human-in-the-loop:** interrupt/resume for sensitive operations (e.g., refunds)
-
-### Run the HTTP API
-
-```bash
-# Terminal 1: Start the FastAPI server
-uvicorn api.main:api --reload
-
-# Terminal 2: Test the endpoint (defaults to the LangGraph agent)
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "0641234567", "question": "What plan am I on?"}'
-
-# Same endpoint, LangChain agent instead - add "backend": "langchain"
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "0641234567", "question": "What plans do you offer?", "backend": "langchain"}'
-```
-
-The API exposes:
-- **POST `/chat`** — stateful chat endpoint (`phone_number` = thread_id / session key; `backend` = `"langgraph"` (default) or `"langchain"`)
-- **GET `/health`** — health check for load balancers
-
-### Run the Flask Chat Page
-
-```bash
-pip install flask
-python -m web.app
-```
-
-Open http://127.0.0.1:5000 — a chat UI (phone number + question box) backed by both agents, with a dropdown to switch between them per message. It's a standalone, single-process app (imports both agents directly) rather than a frontend for the FastAPI service, so there's nothing else to run and no CORS to configure. If a request needs human approval (e.g. a refund) while the LangGraph backend is selected, it gets the same safe fallback message as the FastAPI endpoint rather than pausing for approval; the LangChain backend has no such concept at all and just answers directly.
-
-### Run the Test Suite
-
-```bash
-pytest
-```
-
-- `test/test_api.py` hits `POST /chat` through FastAPI's `TestClient`. The LangGraph cases cover the same four scenarios as `llm/langgraph_agent.py`'s `__main__` demo: a new conversation, a follow-up resolved via the checkpointer, the clarify/retry loop, and a sensitive (refund) request hitting the human-in-the-loop `interrupt()`. The LangChain cases (`backend: "langchain"`) cover `api/main.py`'s own session dispatch - phone number embedding and per-phone-number `AgentExecutor` reuse - with a fake executor standing in for the whole agent.
-- `test/test_langgraph_agent.py` calls the compiled graph directly (`agent_graph.invoke()`/`get_state()`), skipping the FastAPI layer, to cover what the HTTP-level tests structurally can't reach: the `Command(resume=...)` approve/deny round trip (`api/main.py` never calls it), the checkpointer's persisted state verified directly rather than inferred from output text, and cross-thread isolation. It deliberately leaves out a standalone "interrupt pauses"/"clarify loop stops at MAX_RETRIES" test — those would just re-run the same code path `test_api.py` already asserts on via HTTP, with no added coverage.
-- `test/test_langchain_agent.py` calls `llm/langchain_agent.py`'s tools (`get_account_usage`, `check_network_outage`, `search_plans_kb`) and retriever variants (plain, MMR/diverse, metadata-filtered, score-threshold) directly - all real and deterministic, since none of them touch the LLM. `agent_executor`, `extract_chain`, and `llm_with_tools` bind the real `ChatGroq` at import time (unlike `langgraph_agent.py`'s nodes, which look it up fresh per call), so they can't be faked the same way and aren't covered here.
-
-The real `ChatGroq` LLM is swapped for a `FakeListChatModel` wherever `langgraph_agent.py` is involved, so no `GROQ_API_KEY` or network access is needed to run those tests. Caution: `FakeListChatModel` ignores its input entirely and just cycles through canned responses - it proves graph routing/state is correct, not that the right context was actually sent to the LLM. `test_langchain_agent.py` sidesteps the LLM question altogether by only testing tool/retriever logic that never calls it; it does still need network access on first run, to download the local embedding model.
+**Flask** is the opposite default:<br>
+Jinja2 templating and `render_template()` are built in from the start, so returning an HTML page needs no boilerplate (`web/app.py`'s `index()` view).<br>
+It's equally capable of being a pure JSON API (`jsonify()` everywhere, no HTML at all), but it doesn't provide auto-mapping/validation (no request/response model) or OpenAPI docs the way FastAPI does — request data has to be pulled out of `request.get_json()`/`request.args` by hand.
 
 ---
 
@@ -162,6 +94,105 @@ FAKE_ACCOUNTS = {
 ```
 
 Replace with real calls (SQL DB, REST API, gRPC) to ground queries in actual user data.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+```bash
+pip install langchain langchain-groq langchain-huggingface langchain-community langgraph faiss-cpu pypdf pydantic fastapi uvicorn
+export GROQ_API_KEY=gsk-...
+```
+
+For running the test suite, also install:
+
+```bash
+pip install pytest httpx
+```
+
+For PDF example: ensure `plans_handbook.pdf` exists in the working directory.
+
+### Run LangChain Example (Standalone)
+
+```bash
+python -m llm.langchain_agent
+```
+
+> **Not interactive** — `if __name__ == "__main__":` (`llm/langchain_agent.py:305-338`) runs a fixed sequence of predefined, hardcoded questions/scenarios and prints each result, back to back. To try your own questions instead, either edit those calls directly or import the pieces (`agent_executor`, `extract_chain`, `pdf_retriever`, etc.) into your own script.
+
+Demonstrates:
+- JSON output parsing (structured classification)
+- Tool calling (single-step, manual)
+- ReAct agent loop (autonomous multi-step)
+- RAG (knowledge base + PDF retrieval)
+
+### Run LangGraph Example (Standalone)
+
+```bash
+python -m llm.langgraph_agent
+```
+
+> **Not interactive** — the `__main__` block runs a fixed sequence of predefined `app.invoke()` calls (including a deliberately sensitive one, to trigger the human-in-the-loop `interrupt()`) and prints each result. Edit those calls directly, or import `app`/`agent_graph` to drive it with your own input.
+
+Demonstrates:
+- Graph-based state machine
+- Conditional routing (branching logic)
+- Loops/cycles within a turn
+- Cross-turn memory via checkpointing
+- **Human-in-the-loop:** interrupt/resume for sensitive operations (e.g., refunds)
+
+### Run the HTTP API
+
+```bash
+# Terminal 1: Start the FastAPI server
+uvicorn api.main:api --reload
+
+# Terminal 2: Test the endpoint (defaults to the LangGraph agent)
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "0641234567", "question": "What plan am I on?"}'
+
+# Same endpoint, LangChain agent instead - add "backend": "langchain"
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "0641234567", "question": "What plans do you offer?", "backend": "langchain"}'
+```
+
+> **How to use:**
+> `api/main.py` is API-only — no chat page of its own (that's what the Flask app below is for).
+> It's not curl-only either, though — FastAPI auto-generates an interactive docs UI.
+> Opening **http://localhost:8000/docs** (Swagger) or **http://localhost:8000/redoc** in a browser lets you try `/chat` and `/health` from a form instead of the command line.
+> No separate template/route needed for that — it comes from the `ChatRequest`/`ChatResponse` Pydantic models already on the endpoint.
+
+The API exposes:
+- **POST `/chat`** — stateful chat endpoint (`phone_number` = thread_id / session key; `backend` = `"langgraph"` (default) or `"langchain"`)
+- **GET `/health`** — health check for load balancers
+
+### Run the Flask Chat Page
+
+```bash
+pip install flask
+python -m web.app
+```
+
+> **How to use:**<br>
+> Open http://127.0.0.1:5000 — a chat UI (phone number + question box) backed by both agents, with a dropdown to switch between them per message.<br>
+> It's a fully standalone, single-process app (frontend+api+both agents directly) rather than a separate frontend for the FastAPI service, so there's nothing else to run and no CORS to configure.<br>
+> If a request needs human approval (e.g. a refund) while the LangGraph backend is selected, it gets the same safe fallback message as the FastAPI endpoint rather than pausing for approval; the LangChain backend has no such concept at all and just answers directly.
+
+### Run the Test Suite
+
+```bash
+pytest
+```
+
+- `test/test_api.py` hits `POST /chat` through FastAPI's `TestClient`. The LangGraph cases cover the same four scenarios as `llm/langgraph_agent.py`'s `__main__` demo: a new conversation, a follow-up resolved via the checkpointer, the clarify/retry loop, and a sensitive (refund) request hitting the human-in-the-loop `interrupt()`. The LangChain cases (`backend: "langchain"`) cover `api/main.py`'s own session dispatch - phone number embedding and per-phone-number `AgentExecutor` reuse - with a fake executor standing in for the whole agent.
+- `test/test_langgraph_agent.py` calls the compiled graph directly (`agent_graph.invoke()`/`get_state()`), skipping the FastAPI layer, to cover what the HTTP-level tests structurally can't reach: the `Command(resume=...)` approve/deny round trip (`api/main.py` never calls it), the checkpointer's persisted state verified directly rather than inferred from output text, and cross-thread isolation. It deliberately leaves out a standalone "interrupt pauses"/"clarify loop stops at MAX_RETRIES" test — those would just re-run the same code path `test_api.py` already asserts on via HTTP, with no added coverage.
+- `test/test_langchain_agent.py` calls `llm/langchain_agent.py`'s tools (`get_account_usage`, `check_network_outage`, `search_plans_kb`) and retriever variants (plain, MMR/diverse, metadata-filtered, score-threshold) directly - all real and deterministic, since none of them touch the LLM. `agent_executor`, `extract_chain`, and `llm_with_tools` bind the real `ChatGroq` at import time (unlike `langgraph_agent.py`'s nodes, which look it up fresh per call), so they can't be faked the same way and aren't covered here.
+
+The real `ChatGroq` LLM is swapped for a `FakeListChatModel` wherever `langgraph_agent.py` is involved, so no `GROQ_API_KEY` or network access is needed to run those tests. Caution: `FakeListChatModel` ignores its input entirely and just cycles through canned responses - it proves graph routing/state is correct, not that the right context was actually sent to the LLM. `test_langchain_agent.py` sidesteps the LLM question altogether by only testing tool/retriever logic that never calls it; it does still need network access on first run, to download the local embedding model.
 
 ---
 
@@ -295,14 +326,6 @@ def chat(phone_number: str, question: str, backend: str = "langgraph"):
 
 **Pros:** One request shape, easy side-by-side comparison of both agents  
 **Cons:** `AgentExecutor` has no checkpointer, so each HTTP layer has to build and hold its own `phone_number -> AgentExecutor` session dict by hand; `api/main.py` and `web/app.py` keep separate dicts, so a LangChain conversation doesn't carry over between them
-
----
-
-## 🆚 FastAPI vs Flask
-
-**FastAPI** is API-first: it excels at JSON endpoints, auto-generates OpenAPI/Swagger docs, and gives you async + Pydantic auto-mapping/validation (via request/response models, e.g. `ChatRequest`/`ChatResponse` in `api/main.py`). It can render HTML (via `Jinja2Templates`/`StaticFiles`), but you have to wire that up yourself — no `/templates` folder auto-scan like Flask does, and the `request` parameter must be explicitly defined and passed into the template response (boilerplate code).
-
-**Flask** is the opposite default: Jinja2 templating and `render_template()` are built in from the start, so returning an HTML page needs no boilerplate (`web/app.py`'s `index()` view). It's equally capable of being a pure JSON API (`jsonify()` everywhere, no HTML at all), but it doesn't provide auto-mapping/validation (no request/response model) or OpenAPI docs the way FastAPI does — request data has to be pulled out of `request.get_json()`/`request.args` by hand.
 
 ---
 
