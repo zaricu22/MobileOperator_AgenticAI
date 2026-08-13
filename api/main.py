@@ -18,12 +18,21 @@ come back from the graph with "__interrupt__" instead of "answer"; see the
 fallback below. langchain_agent.py has no equivalent concept at all - it has
 no refund tool or approval step, so it'll just answer directly.
 
+FastAPI vs Flask:
+- FastAPI is API-first: it excels at JSON endpoints, auto-generates OpenAPI/Swagger docs, and gives you async + Pydantic auto-mapping/validation (via Request/Response model). 
+It can render HTML (via Jinja2Templates/StaticFiles), but you have to wire/link that up yourself (no /template folder auto-scan like Flask does),
+also 'request' parameter must be defined and passed to the template response (boilerplate code).
+- Flask is the opposite default: Jinja2 templating and render_template() are built in from the start, no boilerplate syntax for simple rendering (returning HTML pages). 
+It's equally capable of being a pure JSON API (jsonify() everywhere) with no HTML at all,
+but it does not provide auto-mapping/validation (lack Request/Response model) or OpenAPI docs as FastAPI does.
+
 pip install fastapi uvicorn
 uvicorn api.main:api --reload
 """
 
 from fastapi import FastAPI
 from pydantic import BaseModel
+# from fastapi.templating import Jinja2Templates
 
 # These two are singletons: the graph is compiled once at import time, and
 # build_agent_executor is the factory web/app.py also uses to hand each
@@ -43,6 +52,8 @@ api = FastAPI(title="Mobile Operator Support API")
 # continued through web/app.py, and vice versa.
 langchain_sessions: dict[str, object] = {}
 
+# templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "web" / "templates")
+
 
 # ---- Request/response shapes ----
 class ChatRequest(BaseModel):
@@ -56,7 +67,12 @@ class ChatResponse(BaseModel):
     retry_count: int
 
 
-# ---- The actual endpoint ----
+# ---- The actual endpoints ----
+
+# @api.get("/")
+# def index(request: Request):
+#     return templates.TemplateResponse(request=request, name="chat.html")
+
 @api.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     if request.backend == "langchain":

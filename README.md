@@ -298,6 +298,14 @@ def chat(phone_number: str, question: str, backend: str = "langgraph"):
 
 ---
 
+## 🆚 FastAPI vs Flask
+
+**FastAPI** is API-first: it excels at JSON endpoints, auto-generates OpenAPI/Swagger docs, and gives you async + Pydantic auto-mapping/validation (via request/response models, e.g. `ChatRequest`/`ChatResponse` in `api/main.py`). It can render HTML (via `Jinja2Templates`/`StaticFiles`), but you have to wire that up yourself — no `/templates` folder auto-scan like Flask does, and the `request` parameter must be explicitly defined and passed into the template response (boilerplate code).
+
+**Flask** is the opposite default: Jinja2 templating and `render_template()` are built in from the start, so returning an HTML page needs no boilerplate (`web/app.py`'s `index()` view). It's equally capable of being a pure JSON API (`jsonify()` everywhere, no HTML at all), but it doesn't provide auto-mapping/validation (no request/response model) or OpenAPI docs the way FastAPI does — request data has to be pulled out of `request.get_json()`/`request.args` by hand.
+
+---
+
 ## 🎯 Use Cases
 
 ### LangChain Example (`llm/langchain_agent.py`)

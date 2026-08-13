@@ -16,6 +16,14 @@ extra moving parts with no real benefit for a single demo page. Importing
 the compiled `agent_graph` directly costs nothing (it's the exact same
 object api/main.py uses) and keeps "run one command, open one page" true.
 
+FastAPI vs Flask:
+- FastAPI is API-first: it excels at JSON endpoints, auto-generates OpenAPI/Swagger docs, and gives you async + Pydantic auto-mapping/validation (via Request/Response model). 
+It can render HTML (via Jinja2Templates/StaticFiles), but you have to wire/link that up yourself (no /template folder auto-scan like Flask does),
+also 'request' parameter must be defined and passed to the template response (boilerplate code).
+- Flask is the opposite default: Jinja2 templating and render_template() are built in from the start, no boilerplate syntax for simple rendering (returning HTML pages). 
+It's equally capable of being a pure JSON API (jsonify() everywhere) with no HTML at all,
+but it does not provide auto-mapping/validation (lack Request/Response model) or OpenAPI docs as FastAPI does.
+
 pip install flask
 $env:GROQ_API_KEY = "gsk_..."
 python -m web.app
